@@ -1,0 +1,132 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+  <Product Id="*"
+           Name="雷蛇毒蝰 V3 Pro 电量托盘"
+           Language="2052"
+           Codepage="936"
+           Version="1.7.7"
+           Manufacturer="岚乔"
+           UpgradeCode="A0FDD24D-87B9-4F1A-B7AA-0F88AB2534BD">
+    <Package Id="*"
+             Keywords="Razer;Viper V3 Pro;电池;托盘"
+             Description="雷蛇毒蝰 V3 Pro 电量托盘"
+             Comments="雷蛇毒蝰 V3 Pro 任务栏电量显示（HID 直连，无需 Synapse/管理员）"
+             Manufacturer="岚乔"
+             InstallerVersion="500"
+             Compressed="yes"
+             InstallScope="perUser"
+             InstallPrivileges="limited"
+             SummaryCodepage="936" />
+    <MajorUpgrade Schedule="afterInstallValidate" DowngradeErrorMessage="已安装更高版本的雷蛇毒蝰 V3 Pro 电量托盘。" />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="AppIcon" SourceFile="mouse.ico" />
+    <Property Id="ARPPRODUCTICON" Value="AppIcon" />
+    <Property Id="ARPCONTACT" Value="岚乔" />
+    <Property Id="ARPCOMMENTS" Value="雷蛇毒蝰 V3 Pro 任务栏电量显示（HID 直连，无需 Synapse/管理员）" />
+    <Property Id="Copyright" Value="Copyright (C) 岚乔 2026" />
+    <Property Id="MSIRESTARTMANAGERCONTROL" Value="Disable" />
+    <Property Id="SAVEDINSTALLDIR" Secure="yes">
+      <RegistrySearch Id="SearchSavedInstallDir" Root="HKCU" Key="Software\LanQiao\RazerV3BatteryTray" Name="InstallDir" Type="raw" />
+    </Property>
+    <CustomAction Id="SetInstallFolder" Property="INSTALLFOLDER" Value="[SAVEDINSTALLDIR]" />
+    <CustomAction Id="KillAppCA" Script="vbscript" Execute="immediate" Impersonate="yes">
+      <![CDATA[
+On Error Resume Next
+Set w=GetObject("winmgmts:")
+For Each x In w.ExecQuery("SELECT * FROM Win32_Process WHERE Name='RazerV3BatteryTray.exe'")
+x.Terminate()
+Next
+CreateObject("WScript.Shell").Run "ping -n 3 127.0.0.1",0,True
+      ]]>
+    </CustomAction>
+    <CustomAction Id="RemoveInstallFolderCA" Directory="SystemFolder" ExeCommand="cmd.exe /c rmdir /s /q &quot;[INSTALLFOLDER]config&quot; &amp; rmdir /s /q &quot;[INSTALLFOLDER]log&quot; &amp; del /f /q &quot;[INSTALLFOLDER]RazerV3BatteryTray.exe&quot; &quot;[INSTALLFOLDER]README.md&quot;" Execute="immediate" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="CleanupRunCA" Script="vbscript" Execute="immediate" Impersonate="yes">
+      <![CDATA[
+On Error Resume Next
+Set s=CreateObject("WScript.Shell")
+s.RegDelete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run\RazerV3BatteryTray"
+      ]]>
+    </CustomAction>
+
+    <!-- 升级保留设置：旧版卸载会删 config，新版安装前先复制到用户 LocalAppData，
+         装完再复制回（xcopy 不依赖安装目录工作路径） -->
+    <CustomAction Id="BackupConfigCA" Directory="SystemFolder"
+                  ExeCommand="cmd.exe /c if exist &quot;[INSTALLFOLDER]config&quot; xcopy /e /i /y &quot;[INSTALLFOLDER]config&quot; &quot;[LocalAppDataFolder]R3U_config&quot;"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="BackupLogCA" Directory="SystemFolder"
+                  ExeCommand="cmd.exe /c if exist &quot;[INSTALLFOLDER]log&quot; xcopy /e /i /y &quot;[INSTALLFOLDER]log&quot; &quot;[LocalAppDataFolder]R3U_log&quot;"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="RestoreConfigCA" Directory="SystemFolder"
+                  ExeCommand="cmd.exe /c if exist &quot;[LocalAppDataFolder]R3U_config&quot; xcopy /e /i /y &quot;[LocalAppDataFolder]R3U_config&quot; &quot;[INSTALLFOLDER]config&quot;"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="RestoreLogCA" Directory="SystemFolder"
+                  ExeCommand="cmd.exe /c if exist &quot;[LocalAppDataFolder]R3U_log&quot; xcopy /e /i /y &quot;[LocalAppDataFolder]R3U_log&quot; &quot;[INSTALLFOLDER]log&quot;"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
+    <CustomAction Id="CleanupBackupCA" Directory="SystemFolder"
+                  ExeCommand="cmd.exe /c if exist &quot;[LocalAppDataFolder]R3U_config&quot; rmdir /s /q &quot;[LocalAppDataFolder]R3U_config&quot; &amp; if exist &quot;[LocalAppDataFolder]R3U_log&quot; rmdir /s /q &quot;[LocalAppDataFolder]R3U_log&quot;"
+                  Execute="immediate" Impersonate="yes" Return="ignore" />
+
+    <Directory Id="TARGETDIR" Name="SourceDir">
+      <Directory Id="SystemFolder" />
+      <Directory Id="LocalAppDataFolder">
+        <Directory Id="INSTALLFOLDER" Name="RazerV3BatteryTray" />
+      </Directory>
+      <Directory Id="ProgramMenuFolder">
+        <Directory Id="AppStartMenuFolder" Name="毒蝰 V3 Pro 电量托盘" />
+      </Directory>
+    </Directory>
+
+    <DirectoryRef Id="INSTALLFOLDER">
+      <Component Id="MainExecutable" Guid="CEF608E0-1872-4E03-8685-3D22954A41FC">
+        <File Id="RazerExe" Source="RazerV3BatteryTray.exe" />
+        <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\LanQiao\RazerV3BatteryTray" Name="MainExe" Type="integer" Value="1" KeyPath="yes" />
+        <RegistryValue Root="HKCU" Key="Software\LanQiao\RazerV3BatteryTray" Name="InstallDir" Type="string" Value="[INSTALLFOLDER]" />
+      </Component>
+      <Component Id="ReadmeFile" Guid="AA060352-76DC-45BB-8D15-BA4AFED3DC53">
+        <File Id="ReadmeMd" Source="README.md" />
+        <RegistryValue Root="HKCU" Key="Software\LanQiao\RazerV3BatteryTray" Name="Readme" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <DirectoryRef Id="AppStartMenuFolder">
+      <Component Id="StartMenuShortcuts" Guid="CA58C5D4-129F-49D9-B14D-0533E2AF46FC">
+        <Shortcut Id="AppShortcut" Name="毒蝰 V3 Pro 电量" Description="打开毒蝰 V3 Pro 电量托盘"
+                  Target="[INSTALLFOLDER]RazerV3BatteryTray.exe" WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+        <Shortcut Id="SettingsShortcut" Name="设置中心" Description="打开毒蝰 V3 Pro 电量设置"
+                  Target="[INSTALLFOLDER]RazerV3BatteryTray.exe" Arguments="--settings"
+                  WorkingDirectory="INSTALLFOLDER" Icon="AppIcon" />
+        <RemoveFolder Id="RemoveAppStartMenuFolder" On="uninstall" />
+        <RegistryValue Root="HKCU" Key="Software\LanQiao\RazerV3BatteryTray" Name="StartMenu" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </DirectoryRef>
+
+    <Feature Id="MainFeature" Title="雷蛇毒蝰 V3 Pro 电量托盘" Level="1">
+      <ComponentRef Id="MainExecutable" />
+      <ComponentRef Id="ReadmeFile" />
+      <ComponentRef Id="StartMenuShortcuts" />
+    </Feature>
+
+    <InstallExecuteSequence>
+      <Custom Action="KillAppCA" Before="InstallValidate">REMOVE="ALL"</Custom>
+      <Custom Action="BackupConfigCA" Before="RemoveExistingProducts">NOT Installed</Custom>
+      <Custom Action="BackupLogCA" Before="RemoveExistingProducts">NOT Installed</Custom>
+      <Custom Action="CleanupRunCA" Before="CostFinalize">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RemoveInstallFolderCA" After="RemoveFiles">REMOVE="ALL" AND NOT UPGRADINGPRODUCTCODE</Custom>
+      <Custom Action="RestoreConfigCA" After="InstallFiles">NOT Installed</Custom>
+      <Custom Action="RestoreLogCA" After="RestoreConfigCA">NOT Installed</Custom>
+      <Custom Action="CleanupBackupCA" After="RestoreLogCA">NOT Installed</Custom>
+      <Custom Action="SetInstallFolder" Before="CostFinalize">SAVEDINSTALLDIR</Custom>
+    </InstallExecuteSequence>
+    <InstallUISequence>
+      <Custom Action="SetInstallFolder" Before="CostFinalize">SAVEDINSTALLDIR</Custom>
+    </InstallUISequence>
+
+    <UIRef Id="WixUI_InstallDir" />
+    <Property Id="WIXUI_INSTALLDIR" Value="INSTALLFOLDER" />
+    <WixVariable Id="WixUILicenseRtf" Value="license.rtf" />
+    <WixVariable Id="WixUIBannerBmp" Value="installer_banner.bmp" />
+    <WixVariable Id="WixUIDialogBmp" Value="installer_dialog.bmp" />
+  </Product>
+</Wix>

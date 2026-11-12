@@ -1,0 +1,23 @@
+# 运行数据（含个人使用记录，不入库）
+config/
+log/
+
+# 构建产物
+*.exe
+*.pdb
+*.wixobj
+*.wixpdb
+dist/
+
+# 备份与临时文件
+*.bak
+*.bak_*
+*.tmp
+*.log
+
+# IDE / 系统
+.vs/
+bin/
+obj/
+Thumbs.db
+Desktop.ini
