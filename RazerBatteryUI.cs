@@ -13,10 +13,14 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Reflection;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
+using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using System.Xml.Serialization;
 using Microsoft.Win32;
@@ -26,8 +30,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("雷蛇毒蝰 V3 Pro 任务栏电量显示（HID 直连，无需 Synapse/管理员）")]
 [assembly: AssemblyCompany("岚乔")]
 [assembly: AssemblyCopyright("Copyright © 岚乔 2026")]
-[assembly: AssemblyVersion("1.7.7.0")]
-[assembly: AssemblyFileVersion("1.7.7.0")]
+[assembly: AssemblyVersion("1.8.0.0")]
+[assembly: AssemblyFileVersion("1.8.0.0")]
 
 public class ColorRange {
     public int Min = 0;
@@ -127,6 +131,9 @@ public class Settings {
     public List<string> RunStats = new List<string>();    // 续航统计 "满电时刻|没电时刻|秒数"（上限 100 条）
     public string CurrentFullStart = "";                  // 当前续航区间起点（满电时刻，未闭合）
     public string SleepOpen = "";                         // 未闭合入睡 "时刻|电量"（跨程序重启/关机持久）
+    public bool AutoCheckUpdate = true;                    // 启动后自动检查 GitHub 新版本
+    public string LastUpdateCheck = "";                    // 最近一次检查时间（ISO）
+    public string SkippedUpdate = "";                      // 用户点了「稍后」的版本，自动检查不再重复提示
 
     public RenderOpts ToOpts(int phase) {
         return new RenderOpts {
@@ -142,10 +149,26 @@ static class Util {
     // Icon 实例不能跨控件共享：窗体/托盘 Dispose 时会连带释放底层句柄，
     // 其他控件再用就会 ObjectDisposedException。每次都克隆一份新的。
     public static Icon AppIcon() {
+        // 1) exe 自带图标（编译参数 /win32icon:mouse.ico）。这条路径能正确取到
+        //    32×32 非 PNG 帧，窗口标题栏、任务栏按钮、Alt-Tab 都显示鼠标图标。
         try {
-            using (var src = Icon.ExtractAssociatedIcon(Application.ExecutablePath))
-                return (Icon)src.Clone();
-        } catch { return (Icon)SystemIcons.Application.Clone(); }
+            using (var src = Icon.ExtractAssociatedIcon(Application.ExecutablePath)) {
+                if (src != null) return (Icon)src.Clone();
+            }
+        } catch { }
+        // 2) 嵌入资源兜底（编译参数 /resource:mouse.ico,mouse.ico）。
+        //    指定 32×32，避免 256×256 PNG 压缩帧在 Icon.ToBitmap() 下解出花屏。
+        try {
+            using (var s = Assembly.GetExecutingAssembly().GetManifestResourceStream("mouse.ico")) {
+                if (s != null) using (var ico = new Icon(s, 32, 32)) return (Icon)ico.Clone();
+            }
+        } catch { }
+        // 3) exe 同目录 mouse.ico
+        try {
+            string p = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "mouse.ico");
+            if (File.Exists(p)) using (var ico = new Icon(p, 32, 32)) return (Icon)ico.Clone();
+        } catch { }
+        return (Icon)SystemIcons.Application.Clone();
     }
 }
 
@@ -1719,7 +1742,8 @@ class SettingsForm : Form {
     Panel pnlNumColor;
     FlowLayoutPanel dailyPickersPanel;
     NumericUpDown numRefresh, numFont, numThick, numLow, numOutline, numSeg, numDailyMax, numLogKeep;
-    CheckBox chkAuto, chkNumber, chkPercent, chkLow, chkFull, chkDaily, chkEst, chkAutoNum;
+    CheckBox chkAuto, chkNumber, chkPercent, chkLow, chkFull, chkDaily, chkEst, chkAutoNum, chkUpdate;
+    ModernButton btnUpdate;
     DataGridView dgv;
     PictureBox picLive, picSim;
     System.Windows.Forms.Timer previewTimer;
@@ -1833,19 +1857,27 @@ class SettingsForm : Form {
 
         // 侧栏底部版本 / 作者（跟随侧栏高度）
         var lblVersion = new Label {
-            Text = "v1.7.7", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
+            Text = "v1.8.0", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
             Font = Ui.Small, BackColor = Ui.Sidebar
         };
         var lblAuthor = new Label {
             Text = "作者：岚乔", AutoSize = true, ForeColor = Color.FromArgb(92, 99, 111),
             Font = Ui.Small, BackColor = Ui.Sidebar
         };
+        btnUpdate = new ModernButton {
+            Text = "检查更新", Bounds = new Rectangle(24, 10, 120, 30),
+            StyleKind = ModernButton.Kind.Secondary, BackColor = Ui.Sidebar
+        };
+        btnUpdate.Click += (s, e) => Program.CheckForUpdates(true);
+        sidebar.Controls.Add(btnUpdate);
         sidebar.Controls.Add(lblVersion);
         sidebar.Controls.Add(lblAuthor);
         sidebar.Resize += (s, e) => {
+            btnUpdate.Location = new Point(24, Math.Max(10, sidebar.ClientSize.Height - 96));
             lblVersion.Location = new Point(24, Math.Max(10, sidebar.ClientSize.Height - 54));
             lblAuthor.Location = new Point(24, Math.Max(10, sidebar.ClientSize.Height - 32));
         };
+        btnUpdate.Location = new Point(24, Math.Max(10, sidebar.ClientSize.Height - 96));
         lblVersion.Location = new Point(24, Math.Max(10, sidebar.ClientSize.Height - 54));
         lblAuthor.Location = new Point(24, Math.Max(10, sidebar.ClientSize.Height - 32));
 
@@ -2072,6 +2104,14 @@ class SettingsForm : Form {
         if (dpiDots == null) return;
         for (int i = 0; i < dpiDots.Length; i++)
             dpiDots[i].Selected = (i + 1 == dpiActiveStage);
+    }
+
+    public void ShowToast(string text, bool ok) { Toast(text, ok); }
+
+    public void SetUpdateBusy(bool busy) {
+        if (btnUpdate == null) return;
+        btnUpdate.Enabled = !busy;
+        btnUpdate.Text = busy ? "检查中…" : "检查更新";
     }
 
     void Toast(string text, bool ok) {
@@ -2745,10 +2785,12 @@ class SettingsForm : Form {
         Muted(c1, "充满后提醒可以拔线", 230, R2, 280, 28);
         Muted(c1, "无线连接时才会弹出系统通知，有线充电期间不打扰", 24, R2 + 42, 672, 24);
 
-        var c2 = AddCard(sec, ref y, "启动与常驻", "开机后在后台静默运行，不显示任何窗口", 160);
+        var c2 = AddCard(sec, ref y, "启动与更新", "开机后在后台静默运行；自动检查 GitHub 新版本", 232);
         chkAuto = Tgl(c2, "开机自动启动", 24, R1 - 1, 200, cfg.AutoStart);
         Muted(c2, "写入当前用户启动项（HKCU），无需管理员权限；重复启动会自动拦截。", 24, R1 + 44, 672, 24);
         Muted(c2, "静默启动：程序为纯 GUI 进程，开机不会闪现控制台窗口。", 24, R1 + 76, 672, 24);
+        chkUpdate = Tgl(c2, "启动时自动检查更新", 24, R1 + 110, 240, cfg.AutoCheckUpdate);
+        Muted(c2, "确认后自动下载、校验并安装；升级保留 config\\、log\\ 与全部设置。", 24, R1 + 148, 672, 24);
 
         sec.Height = y + 2;
         return sec;
@@ -3195,6 +3237,7 @@ class SettingsForm : Form {
         cfg.EstimateSegments = (int)numSeg.Value;
         cfg.DailyReport = chkDaily.Checked;
         cfg.DailyReportMax = (int)numDailyMax.Value;
+        cfg.AutoCheckUpdate = chkUpdate.Checked;
         cfg.LogKeepDays = (int)numLogKeep.Value;
         cfg.DailyTimes = new List<string>();
         foreach (Control c in dailyPickersPanel.Controls)
@@ -3602,6 +3645,347 @@ class RecordListForm : Form {
     }
 }
 
+// ======================= 自动更新 =======================
+class UpdateInfo {
+    public string Version = "";
+    public string Tag = "";
+    public string Title = "";
+    public string Notes = "";
+    public string ReleaseUrl = "";
+    public string AssetName = "";
+    public string AssetUrl = "";
+    public long AssetSize;
+    public string Digest = "";
+}
+
+static class UpdateChecker {
+    public const string Owner = "linglochen";
+    public const string Repo = "RazerV3BatteryTray";
+    public static readonly Version Current = Assembly.GetExecutingAssembly().GetName().Version;
+
+    public static string CurrentText {
+        get { return Current.Major + "." + Current.Minor + "." + Current.Build; }
+    }
+    public static string ApiUrl {
+        get { return "https://api.github.com/repos/" + Owner + "/" + Repo + "/releases/latest"; }
+    }
+
+    public static UpdateInfo FetchLatest() {
+        try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; } catch { }
+        var req = (HttpWebRequest)WebRequest.Create(ApiUrl);
+        req.UserAgent = "RazerV3BatteryTray/" + CurrentText;
+        req.Accept = "application/vnd.github+json";
+        req.Timeout = 12000;
+        req.ReadWriteTimeout = 12000;
+        req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
+        string json;
+        try {
+            using (var resp = (HttpWebResponse)req.GetResponse())
+            using (var sr = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
+                json = sr.ReadToEnd();
+        } catch (WebException ex) {
+            var hr = ex.Response as HttpWebResponse;
+            if (hr != null && (int)hr.StatusCode == 403) throw new Exception("GitHub 接口访问过于频繁，请稍后再试。");
+            if (hr != null && (int)hr.StatusCode == 404) throw new Exception("仓库还没有发布版本。");
+            throw new Exception("无法连接 GitHub：" + ex.Message);
+        }
+        return ParseLatest(json);
+    }
+
+    public static UpdateInfo ParseLatest(string json) {
+        var root = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+        if (root == null) throw new Exception("GitHub 返回的数据为空。");
+        object o;
+        string tag = root.TryGetValue("tag_name", out o) ? Convert.ToString(o) : "";
+        if (string.IsNullOrEmpty(tag)) throw new Exception("GitHub 返回的数据格式不正确。");
+        var info = new UpdateInfo {
+            Tag = tag,
+            Version = tag.TrimStart('v', 'V'),
+            Title = root.TryGetValue("name", out o) ? Convert.ToString(o) : tag,
+            Notes = root.TryGetValue("body", out o) ? Convert.ToString(o) : "",
+            ReleaseUrl = root.TryGetValue("html_url", out o) ? Convert.ToString(o)
+                : "https://github.com/" + Owner + "/" + Repo + "/releases/latest"
+        };
+        object assetsObj;
+        var assets = root.TryGetValue("assets", out assetsObj)
+            ? assetsObj as System.Collections.IEnumerable : null;
+        if (assets != null) {
+            foreach (var item in assets) {
+                var a = item as Dictionary<string, object>;
+                if (a == null) continue;
+                string name = a.ContainsKey("name") ? Convert.ToString(a["name"]) : "";
+                if (!name.EndsWith(".msi", StringComparison.OrdinalIgnoreCase)) continue;
+                info.AssetName = name;
+                info.AssetUrl = a.ContainsKey("browser_download_url") ? Convert.ToString(a["browser_download_url"]) : "";
+                if (a.ContainsKey("size")) {
+                    long sz;
+                    long.TryParse(Convert.ToString(a["size"]), out sz);
+                    info.AssetSize = sz;
+                }
+                info.Digest = a.ContainsKey("digest") ? Convert.ToString(a["digest"]) : "";
+                break;
+            }
+        }
+        return info;
+    }
+
+    public static bool IsNewer(UpdateInfo info) {
+        Version v;
+        if (info == null || !Version.TryParse(info.Version, out v)) return false;
+        if (v.Major != Current.Major) return v.Major > Current.Major;
+        if (v.Minor != Current.Minor) return v.Minor > Current.Minor;
+        return v.Build > Current.Build;
+    }
+
+    public static string Sha256(string path) {
+        using (var sha = SHA256.Create())
+        using (var fs = File.OpenRead(path)) {
+            var hash = sha.ComputeHash(fs);
+            var sb = new StringBuilder(hash.Length * 2);
+            foreach (var b in hash) sb.Append(b.ToString("x2"));
+            return sb.ToString();
+        }
+    }
+}
+
+// 发现新版本：更新说明 + 下载进度 + 自动调用 MSI 安装
+class UpdateForm : Form {
+    UpdateInfo info;
+    bool autoCheck;
+    bool downloading;
+    bool proxyTried;
+    string msiPath;
+    WebClient client;
+    Panel barBg, barFill;
+    Label lblStatus, lblPct;
+    ModernButton btnNow, btnLater, btnPage;
+    public bool Skipped;
+
+    public UpdateForm(UpdateInfo info, bool autoCheck) {
+        this.info = info;
+        this.autoCheck = autoCheck;
+        Text = "发现新版本";
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        StartPosition = FormStartPosition.CenterScreen;
+        ShowInTaskbar = true;
+        TopMost = true;
+        BackColor = Ui.Bg;
+        Font = new Font("Microsoft YaHei UI", 9F, FontStyle.Regular, GraphicsUnit.Point);
+        AutoScaleMode = AutoScaleMode.Font;
+        ClientSize = new Size(560, 474);
+        try { Icon = Util.AppIcon(); } catch { }
+
+        var lblTitle = new Label {
+            Text = "发现新版本 v" + info.Version,
+            Bounds = new Rectangle(28, 22, 504, 30),
+            Font = Ui.Big, ForeColor = Ui.Text, BackColor = Ui.Bg
+        };
+        var lblSub = new Label {
+            Text = "当前版本 v" + UpdateChecker.CurrentText + "   →   最新版本 v" + info.Version,
+            Bounds = new Rectangle(30, 56, 504, 24),
+            Font = Ui.Body, ForeColor = Ui.Muted, BackColor = Ui.Bg
+        };
+        var lblNotes = new Label {
+            Text = "更新内容",
+            Bounds = new Rectangle(30, 94, 200, 22),
+            Font = Ui.BodyBold, ForeColor = Ui.Text, BackColor = Ui.Bg
+        };
+        var notes = new TextBox {
+            Text = NormalizeNotes(info.Notes),
+            Bounds = new Rectangle(28, 120, 504, 188),
+            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical,
+            BorderStyle = BorderStyle.FixedSingle, BackColor = Color.White,
+            ForeColor = Ui.Text, Font = Ui.Small
+        };
+
+        barBg = new Panel {
+            Bounds = new Rectangle(28, 322, 504, 16), BackColor = Color.FromArgb(232, 236, 240)
+        };
+        barFill = new Panel {
+            Bounds = new Rectangle(0, 0, 0, 16), BackColor = Ui.Accent
+        };
+        barBg.Controls.Add(barFill);
+        lblStatus = new Label {
+            Text = string.IsNullOrEmpty(info.AssetUrl) ? "该版本没有 MSI 安装包，请打开发布页下载。" : "准备下载…",
+            Bounds = new Rectangle(28, 346, 360, 24),
+            Font = Ui.Body, ForeColor = Ui.Muted, BackColor = Ui.Bg
+        };
+        lblPct = new Label {
+            Text = "", Bounds = new Rectangle(420, 346, 112, 24),
+            Font = Ui.BodyBold, ForeColor = Ui.AccentDark, BackColor = Ui.Bg,
+            TextAlign = ContentAlignment.MiddleRight
+        };
+
+        btnPage = new ModernButton {
+            Text = "打开发布页", Bounds = new Rectangle(28, 414, 132, 38),
+            StyleKind = ModernButton.Kind.Secondary, BackColor = Ui.Bg
+        };
+        btnPage.Click += (s, e) => {
+            try { System.Diagnostics.Process.Start(info.ReleaseUrl); } catch { }
+        };
+        btnNow = new ModernButton {
+            Text = "立即更新", Bounds = new Rectangle(400, 414, 132, 38),
+            StyleKind = ModernButton.Kind.Primary, BackColor = Ui.Bg
+        };
+        btnNow.Click += (s, e) => StartDownload(false);
+        btnLater = new ModernButton {
+            Text = "稍后", Bounds = new Rectangle(292, 414, 96, 38),
+            StyleKind = ModernButton.Kind.Secondary, BackColor = Ui.Bg
+        };
+        btnLater.Click += (s, e) => { Skipped = true; Close(); };
+        if (string.IsNullOrEmpty(info.AssetUrl)) btnNow.Enabled = false;
+        AcceptButton = btnNow;
+        CancelButton = btnLater;
+
+        var line = new Panel { Bounds = new Rectangle(0, 400, 560, 1), BackColor = Ui.Border };
+        Controls.Add(lblTitle);
+        Controls.Add(lblSub);
+        Controls.Add(lblNotes);
+        Controls.Add(notes);
+        Controls.Add(barBg);
+        Controls.Add(lblStatus);
+        Controls.Add(lblPct);
+        Controls.Add(line);
+        Controls.Add(btnPage);
+        Controls.Add(btnNow);
+        Controls.Add(btnLater);
+        notes.SelectionStart = 0;
+        notes.SelectionLength = 0;
+    }
+
+    static string NormalizeNotes(string text) {
+        if (string.IsNullOrEmpty(text)) return "";
+        string s = text.Replace("\r\n", "\n").Replace('\r', '\n');
+        s = s.Replace("`", "");
+        s = Regex.Replace(s, @"(?m)^\s*#{1,6}\s*", "");
+        s = Regex.Replace(s, @"\[([^\]]+)\]\(([^)]+)\)", "$1: $2");
+        s = s.Replace("\n", "\r\n");
+        if (s.Length > 6000) s = s.Substring(0, 6000) + "\r\n…";
+        return s;
+    }
+
+    protected override void OnShown(EventArgs e) {
+        base.OnShown(e);
+        try { btnNow.Focus(); } catch { }
+    }
+
+    void StartDownload(bool viaProxy) {
+        try { ServicePointManager.SecurityProtocol |= (SecurityProtocolType)3072; } catch { }
+        if (string.IsNullOrEmpty(info.AssetUrl)) {
+            MessageBox.Show(this, "该版本没有提供 MSI 安装包，请打开发布页手动下载。", "检查更新",
+                MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return;
+        }
+        if (viaProxy && string.IsNullOrEmpty(info.Digest)) {
+            Fail("直连下载失败，且该版本没有 SHA256 校验值，已停止自动更新。\n请打开发布页手动下载。");
+            return;
+        }
+        downloading = true;
+        proxyTried = viaProxy;
+        btnNow.Enabled = false;
+        btnLater.Enabled = false;
+        btnPage.Enabled = false;
+        lblStatus.ForeColor = Ui.Muted;
+        lblStatus.Text = viaProxy ? "直连较慢，正在尝试加速下载…" : "正在下载…";
+        lblPct.Text = "0%";
+        barFill.Width = 0;
+        try {
+            string dir = Path.Combine(Path.GetTempPath(), "RazerV3BatteryTray_Update");
+            Directory.CreateDirectory(dir);
+            msiPath = Path.Combine(dir, string.IsNullOrEmpty(info.AssetName) ? "update.msi" : info.AssetName);
+            if (File.Exists(msiPath)) File.Delete(msiPath);
+        } catch (Exception ex) {
+            Fail("无法创建下载目录：" + ex.Message);
+            return;
+        }
+        try {
+            client = new WebClient();
+            client.Headers.Add("User-Agent", "RazerV3BatteryTray/" + UpdateChecker.CurrentText);
+            client.DownloadProgressChanged += (s, e) => {
+                int p = Math.Max(0, Math.Min(100, e.ProgressPercentage));
+                barFill.Width = barBg.Width * p / 100;
+                lblPct.Text = p + "%";
+                lblStatus.Text = info.AssetSize > 0
+                    ? "正在下载… " + FormatSize(e.BytesReceived) + " / " + FormatSize(info.AssetSize)
+                    : "正在下载… " + FormatSize(e.BytesReceived);
+            };
+            client.DownloadFileCompleted += (s, e) => {
+                downloading = false;
+                if (e.Error != null) {
+                    try { if (client != null) client.Dispose(); } catch { }
+                    if (!proxyTried && !string.IsNullOrEmpty(info.Digest)) {
+                        try { if (File.Exists(msiPath)) File.Delete(msiPath); } catch { }
+                        StartDownload(true);
+                    } else {
+                        Fail("下载失败：" + e.Error.Message + "\n可打开发布页手动下载。");
+                    }
+                    return;
+                }
+                lblStatus.Text = "正在校验安装包…";
+                string err = VerifyDigest();
+                if (err != null) { Fail(err); return; }
+                lblStatus.Text = "下载完成，正在启动安装程序…";
+                lblPct.Text = "100%";
+                try {
+                    Program.LaunchUpdater(msiPath, info);
+                    Close();
+                } catch (Exception ex) {
+                    Fail("启动安装程序失败：" + ex.Message);
+                }
+            };
+            string url = viaProxy ? "https://gh-proxy.com/" + info.AssetUrl : info.AssetUrl;
+            client.DownloadFileAsync(new Uri(url), msiPath);
+        } catch (Exception ex) {
+            Fail("下载失败：" + ex.Message);
+        }
+    }
+
+    string VerifyDigest() {
+        try {
+            if (string.IsNullOrEmpty(info.Digest) || !info.Digest.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase))
+                return null;   // 没有校验值时仍走 HTTPS 官方地址
+            string want = info.Digest.Substring(7).Trim().ToLowerInvariant();
+            string got = UpdateChecker.Sha256(msiPath);
+            if (!string.Equals(want, got, StringComparison.OrdinalIgnoreCase)) {
+                try { File.Delete(msiPath); } catch { }
+                return "安装包 SHA256 校验失败，已取消安装。";
+            }
+            return null;
+        } catch (Exception ex) {
+            return "校验安装包失败：" + ex.Message;
+        }
+    }
+
+    void Fail(string message) {
+        downloading = false;
+        btnNow.Enabled = !string.IsNullOrEmpty(info.AssetUrl);
+        btnLater.Enabled = true;
+        btnPage.Enabled = true;
+        lblStatus.ForeColor = Ui.Red;
+        lblStatus.Text = "更新未完成";
+        lblPct.Text = "";
+        try { if (client != null) client.Dispose(); } catch { }
+        MessageBox.Show(this, message, "检查更新", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+    }
+
+    static string FormatSize(long bytes) {
+        if (bytes >= 1024 * 1024) return (bytes / 1024.0 / 1024.0).ToString("0.0") + " MB";
+        if (bytes >= 1024) return (bytes / 1024.0).ToString("0") + " KB";
+        return bytes + " B";
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e) {
+        if (downloading) {
+            e.Cancel = true;
+            return;
+        }
+        if (e.CloseReason == CloseReason.UserClosing) Skipped = true;
+        base.OnFormClosing(e);
+    }
+}
+
 static class Program {
     [DllImport("user32.dll")]
     static extern bool SetProcessDPIAware();
@@ -3633,6 +4017,8 @@ static class Program {
     static System.Windows.Forms.Timer timer;        // 电量轮询
     static System.Windows.Forms.Timer animTimer;    // 充电动画帧（仅在充电时运行）
     static Mutex mutex;
+    static System.Windows.Forms.Timer updateTimer;   // 每 6 小时检查一次 GitHub Release
+    static bool updateChecking, updateDialogOpen;
 
     // 最近一次查询结果 + 动画相位（充电视觉状态由动画定时器驱动，查询结果只作数据源）
     static NativeHid.BatteryResult last = new NativeHid.BatteryResult();
@@ -3781,6 +4167,7 @@ static class Program {
  new MenuItem("设置", (s, e) => ShowSettings()),
  new MenuItem("使用记录", (s, e) => HistoryForm.Open(cfg, null, null)),
  new MenuItem("立即刷新", (s, e) => Update()),
+ new MenuItem("检查更新", (s, e) => CheckForUpdates(true)),
  new MenuItem("-"),
  new MenuItem("连接方式：--", (s, e) => {}) { Enabled = false, Name = "link" },
  new MenuItem("预估值待采样更新", (s, e) => {}) { Enabled = false, Name = "est" },
@@ -3807,6 +4194,7 @@ static class Program {
         // R3 开机自启兼容：系统冷启动时 USB/HID 栈未必就绪，首次查不到设备不放弃，
         // 每 5 秒重试，最多 12 分钟；一旦连上转到正常轮询节奏
         RetryBootstrap();
+        StartUpdateTimer();
 
         Log("启动 v" + Assembly.GetExecutingAssembly().GetName().Version);
         CleanOldArchives();   // 清理超期日志归档（LogKeepDays=0 永久保留）
@@ -3843,9 +4231,147 @@ static class Program {
     static void Quit() {
         timer.Stop(); animTimer.Stop();
         try { if (smartTimer != null) smartTimer.Stop(); } catch { }
+        try { if (updateTimer != null) updateTimer.Stop(); } catch { }
         RestoreNormalPoll();   // 退出时把游戏轮询率恢复成常规轮询率，避免鼠标留在 8000Hz
         tray.Visible = false;
         Application.Exit();
+    }
+
+    // ---- 自动更新 ----
+    static void StartUpdateTimer() {
+        var first = new System.Windows.Forms.Timer { Interval = 10000 };
+        first.Tick += (s, e) => {
+            first.Stop(); first.Dispose();
+            CheckForUpdates(false);
+        };
+        first.Start();
+        updateTimer = new System.Windows.Forms.Timer { Interval = 6 * 60 * 60 * 1000 };
+        updateTimer.Tick += (s, e) => CheckForUpdates(false);
+        updateTimer.Start();
+    }
+
+    public static void CheckForUpdates(bool manual) {
+        if (updateChecking) return;
+        if (!manual) {
+            if (cfg == null || !cfg.AutoCheckUpdate) return;
+            DateTime last;
+            if (DateTime.TryParse(cfg.LastUpdateCheck, out last) &&
+                (DateTime.Now - last).TotalHours < 6) return;
+            try { if (IsFullscreenGame()) return; } catch { }
+        }
+        updateChecking = true;
+        if (settingsForm != null && !settingsForm.IsDisposed) {
+            if (manual) settingsForm.ShowToast("正在检查更新…", true);
+            settingsForm.SetUpdateBusy(true);
+        } else if (manual && tray != null) {
+            tray.ShowBalloonTip(2000, "检查更新", "正在连接 GitHub…", ToolTipIcon.Info);
+        }
+        ThreadPool.QueueUserWorkItem(_ => {
+            UpdateInfo info = null;
+            string err = null;
+            try { info = UpdateChecker.FetchLatest(); } catch (Exception ex) { err = ex.Message; }
+            try {
+                marshalForm.BeginInvoke((Action)(() => {
+                    updateChecking = false;
+                    if (settingsForm != null && !settingsForm.IsDisposed) settingsForm.SetUpdateBusy(false);
+                    cfg.LastUpdateCheck = DateTime.Now.ToString("o");
+                    SaveSettings();
+                    if (err != null) {
+                        if (manual) ShowUpdateMessage("检查更新失败：\n\n" + err, "检查更新", MessageBoxIcon.Warning);
+                        return;
+                    }
+                    if (!UpdateChecker.IsNewer(info)) {
+                        if (manual) ShowUpdateMessage("当前已是最新版本 v" + UpdateChecker.CurrentText + "。",
+                            "检查更新", MessageBoxIcon.Information);
+                        return;
+                    }
+                    if (!manual && cfg.SkippedUpdate == info.Version) return;
+                    ShowUpdateDialog(info, !manual);
+                }));
+            } catch (ObjectDisposedException) { }
+        });
+    }
+
+    static void ShowUpdateMessage(string text, string title, MessageBoxIcon icon) {
+        try {
+            if (settingsForm != null && !settingsForm.IsDisposed && settingsForm.Visible)
+                MessageBox.Show(settingsForm, text, title, MessageBoxButtons.OK, icon);
+            else
+                MessageBox.Show(text, title, MessageBoxButtons.OK, icon);
+        } catch { }
+    }
+
+    static void ShowUpdateDialog(UpdateInfo info, bool autoCheck) {
+        if (updateDialogOpen) return;
+        updateDialogOpen = true;
+        try {
+            using (var f = new UpdateForm(info, autoCheck)) {
+                if (settingsForm != null && !settingsForm.IsDisposed && settingsForm.Visible)
+                    f.ShowDialog(settingsForm);
+                else
+                    f.ShowDialog();
+                if (autoCheck && f.Skipped) {
+                    cfg.SkippedUpdate = info.Version;
+                    SaveSettings();
+                }
+            }
+        } catch (ObjectDisposedException) { } finally {
+            updateDialogOpen = false;
+        }
+    }
+
+    static string GetInstalledDir() {
+        try {
+            using (var k = Registry.CurrentUser.OpenSubKey(@"Software\LanQiao\RazerV3BatteryTray")) {
+                string s = k == null ? null : k.GetValue("InstallDir") as string;
+                if (!string.IsNullOrEmpty(s) && Directory.Exists(s)) return s.TrimEnd('\\');
+            }
+        } catch { }
+        return AppDomain.CurrentDomain.BaseDirectory.TrimEnd('\\');
+    }
+
+    // 先退出旧进程，再静默升级（MSI 自带 config/log 备份恢复），完成后自动启动新版本
+    public static void LaunchUpdater(string msiPath, UpdateInfo info) {
+        string target = GetInstalledDir();
+        string dir = Path.GetDirectoryName(msiPath);
+        string bat = Path.Combine(dir, "apply_update.cmd");
+        string log = Path.Combine(dir, "update.log");
+        string fallback = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "RazerV3BatteryTray");
+        var sb = new StringBuilder();
+        sb.AppendLine("@echo off");
+        sb.AppendLine("setlocal");
+        sb.AppendLine("set \"MSI=" + msiPath + "\"");
+        sb.AppendLine("set \"DST=" + target + "\"");
+        sb.AppendLine("set \"FALLBACK=" + fallback + "\"");
+        sb.AppendLine("echo [%date% %time%] wait app exit >> \"" + log + "\"");
+        sb.AppendLine(":wait");
+        sb.AppendLine("tasklist /FI \"IMAGENAME eq RazerV3BatteryTray.exe\" 2>nul | find /I \"RazerV3BatteryTray.exe\" >nul");
+        sb.AppendLine("if not errorlevel 1 (");
+        sb.AppendLine("  ping -n 2 127.0.0.1 >nul");
+        sb.AppendLine("  goto wait");
+        sb.AppendLine(")");
+        sb.AppendLine("echo [%date% %time%] install >> \"" + log + "\"");
+        sb.AppendLine("msiexec /i \"%MSI%\" /passive /norestart INSTALLFOLDER=\"%DST%\"");
+        sb.AppendLine("echo [%date% %time%] msiexec rc=%errorlevel% >> \"" + log + "\"");
+        sb.AppendLine("if not exist \"%DST%\\RazerV3BatteryTray.exe\" set \"DST=%FALLBACK%\"");
+        sb.AppendLine("start \"\" \"%DST%\\RazerV3BatteryTray.exe\"");
+        sb.AppendLine("exit /b");
+        File.WriteAllText(bat, sb.ToString(), Encoding.Default);
+        SaveSettings();
+        var psi = new System.Diagnostics.ProcessStartInfo("cmd.exe", "/c \"" + bat + "\"") {
+            CreateNoWindow = true,
+            UseShellExecute = false,
+            WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden,
+            WorkingDirectory = dir
+        };
+        System.Diagnostics.Process.Start(psi);
+        try {
+            marshalForm.BeginInvoke((Action)(() => {
+                try { tray.Visible = false; } catch { }
+                Application.Exit();
+            }));
+        } catch { Application.Exit(); }
     }
 
     static SettingsForm settingsForm;
