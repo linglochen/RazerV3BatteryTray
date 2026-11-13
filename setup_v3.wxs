@@ -4,7 +4,7 @@
            Name="雷蛇毒蝰 V3 Pro 电量托盘"
            Language="2052"
            Codepage="936"
-           Version="1.8.0"
+           Version="1.8.1"
            Manufacturer="岚乔"
            UpgradeCode="A0FDD24D-87B9-4F1A-B7AA-0F88AB2534BD">
     <Package Id="*"

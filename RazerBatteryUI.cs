@@ -30,8 +30,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("雷蛇毒蝰 V3 Pro 任务栏电量显示（HID 直连，无需 Synapse/管理员）")]
 [assembly: AssemblyCompany("岚乔")]
 [assembly: AssemblyCopyright("Copyright © 岚乔 2026")]
-[assembly: AssemblyVersion("1.8.0.0")]
-[assembly: AssemblyFileVersion("1.8.0.0")]
+[assembly: AssemblyVersion("1.8.1.0")]
+[assembly: AssemblyFileVersion("1.8.1.0")]
 
 public class ColorRange {
     public int Min = 0;
@@ -220,14 +220,17 @@ static class NativeHid {
 
     static int? Query(IntPtr h, byte cmd) {
         var req = BuildRequest(cmd);
-        int[] waits = { 80, 150, 250 };
+        var waits = FastQuery ? FastWaits : NormalWaits;
         foreach (int w in waits) {
             if (!HidD_SetFeature(h, req, 91)) return null;
             Thread.Sleep(w);
             var resp = new byte[91];
             if (!HidD_GetFeature(h, resp, 91)) return null;
             if (resp[1] == 0x02) return resp[10];
-            if (resp[1] != 0x01) return null;
+            if (resp[1] != 0x01) {
+                if (FastQuery) continue;   // 唤醒瞬间设备未就绪：继续快速重试
+                return null;
+            }
         }
         return null;
     }
@@ -247,10 +250,16 @@ static class NativeHid {
     // 调试日志回调：把枚举/查询细节写进主日志，插线问题远程可判断
     public static Action<string> DebugLog;
 
+    // 唤醒快速模式：缩短 SetFeature→GetFeature 等待，并在设备未就绪时继续重试。
+    // 只在系统唤醒 / 鼠标休眠唤醒后的几秒内开启，平时仍用稳定的 80/150/250ms 节奏。
+    public static volatile bool FastQuery;
+    static readonly int[] NormalWaits = { 80, 150, 250 };
+    static readonly int[] FastWaits = { 15, 30, 60, 120 };
+
     static int? Query(IntPtr h, byte cmd, out string raw) {
         raw = "";
         var req = BuildRequest(cmd);
-        int[] waits = { 80, 150, 250 };
+        var waits = FastQuery ? FastWaits : NormalWaits;
         foreach (int w in waits) {
             if (!HidD_SetFeature(h, req, 91)) return null;
             Thread.Sleep(w);
@@ -265,7 +274,10 @@ static class NativeHid {
                 continue;
             }
             if (resp[1] == 0x02) return resp[10];
-            if (resp[1] != 0x01) return null;
+            if (resp[1] != 0x01) {
+                if (FastQuery) continue;
+                return null;
+            }
         }
         return null;
     }
@@ -282,7 +294,7 @@ static class NativeHid {
                 byte crc = 0;
                 for (int i = 3; i <= 88; i++) crc ^= req[i];
                 req[89] = crc;
-                int[] waits = { 80, 150, 250 };
+                var waits = FastQuery ? FastWaits : NormalWaits;
                 foreach (int w in waits) {
                     if (!HidD_SetFeature(h, req, 91)) break;
                     Thread.Sleep(w);
@@ -291,6 +303,7 @@ static class NativeHid {
                     if (resp[2] != tid || resp[7] != cmdClass || resp[8] != cmd) continue;
                     if (resp[1] == 0x02) return resp;
                     if (resp[1] == 0x01) continue;
+                    if (FastQuery) continue;
                     return resp;
                 }
             } catch { } finally { CloseHandle(h); }
@@ -1857,7 +1870,7 @@ class SettingsForm : Form {
 
         // 侧栏底部版本 / 作者（跟随侧栏高度）
         var lblVersion = new Label {
-            Text = "v1.8.0", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
+            Text = "v1.8.1", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
             Font = Ui.Small, BackColor = Ui.Sidebar
         };
         var lblAuthor = new Label {
@@ -4022,6 +4035,11 @@ static class Program {
 
     // 最近一次查询结果 + 动画相位（充电视觉状态由动画定时器驱动，查询结果只作数据源）
     static NativeHid.BatteryResult last = new NativeHid.BatteryResult();
+    static NativeHid.BatteryResult lastGoodResult;   // 最近一次有效电量：唤醒瞬间先保留旧图标，避免闪"未连接"
+    static DateTime wakeGraceUntil = DateTime.MinValue;
+    static bool inNoData;
+    static System.Windows.Forms.Timer wakeFastTimer;
+    static System.Windows.Forms.Timer wakeInputTimer;
     static int animPhase;
     // 鼠标 DPI/轮询率缓存（悬浮提示、设置页顶栏、鼠标设置页共用；3 秒刷新一次）
     public static NativeHid.MouseInfo mouseInfo = new NativeHid.MouseInfo();
@@ -4074,6 +4092,58 @@ static class Program {
         int w = r.Right - r.Left, hh = r.Bottom - r.Top;
         return w >= s.Width - 2 && hh >= s.Height - 2 &&
                r.Left <= s.Left && r.Top <= s.Top && r.Right >= s.Right && r.Bottom >= s.Bottom;
+    }
+
+    // 鼠标休眠后用户一动鼠标就快速读电量：不依赖系统 Resume（鼠标休眠时系统没睡）。
+    [StructLayout(LayoutKind.Sequential)]
+    struct LASTINPUTINFO { public uint cbSize; public uint dwTime; }
+    [DllImport("user32.dll")] static extern bool GetLastInputInfo(ref LASTINPUTINFO plii);
+
+    static void StartWakeInputWatch() {
+        wakeInputTimer = new System.Windows.Forms.Timer { Interval = 500 };
+        wakeInputTimer.Tick += (s, e) => {
+            try {
+                if (last == null || (last.Online && last.Percent >= 0)) return;
+                if (DateTime.Now < wakeGraceUntil) return;
+                var info = new LASTINPUTINFO();
+                info.cbSize = (uint)Marshal.SizeOf(info);
+                if (!GetLastInputInfo(ref info)) return;
+                uint idle = unchecked((uint)Environment.TickCount) - info.dwTime;
+                if (idle <= 700) BeginWakeRecovery(false);
+            } catch { }
+        };
+        wakeInputTimer.Start();
+    }
+
+    // 唤醒快速恢复：15 秒系统唤醒 / 8 秒鼠标唤醒，期间缩短 HID 等待并每 200ms 重试一次
+    static void BeginWakeRecovery(bool systemResume) {
+        if (!systemResume && DateTime.Now < wakeGraceUntil) return;
+        wakeGraceUntil = DateTime.Now.AddSeconds(systemResume ? 15 : 8);
+        NativeHid.FastQuery = true;
+        try {
+            if (wakeFastTimer != null) { wakeFastTimer.Stop(); wakeFastTimer.Dispose(); }
+        } catch { }
+        var timer = new System.Windows.Forms.Timer { Interval = systemResume ? 15000 : 8000 };
+        timer.Tick += (s, e) => {
+            timer.Stop();
+            NativeHid.FastQuery = false;
+            try { timer.Dispose(); } catch { }
+            if (wakeFastTimer == timer) wakeFastTimer = null;
+        };
+        wakeFastTimer = timer;
+        timer.Start();
+        Log(systemResume ? "系统唤醒：快速恢复电量读取" : "鼠标休眠唤醒：快速恢复电量读取");
+        ThreadPool.QueueUserWorkItem(_ => {
+            var deadline = DateTime.Now.AddSeconds(systemResume ? 15 : 8);
+            while (DateTime.Now < deadline) {
+                var res = SafeRead(true);
+                if (res != null && res.Online && res.Percent >= 0) {
+                    try { marshalForm.BeginInvoke((Action)(() => ApplyResult(res))); } catch { }
+                    break;
+                }
+                Thread.Sleep(200);
+            }
+        });
     }
 
     // 智能轮询率（本程序实现）：全屏游戏时切到游戏轮询率，退出全屏恢复常规轮询率。
@@ -4154,6 +4224,12 @@ static class Program {
                 SaveSettings();
             } catch { }
         };
+        // 系统睡眠唤醒：立刻进入快速查询，不等下一轮 1 秒定时器
+        SystemEvents.PowerModeChanged += (s, e) => {
+            if (e.Mode != PowerModes.Resume) return;
+            try { marshalForm.BeginInvoke((Action)(() => BeginWakeRecovery(true))); }
+            catch { try { BeginWakeRecovery(true); } catch { } }
+        };
 
         // 隐藏载体窗体：Application.Run 需要一个消息载体，后台线程也经它回 UI 线程
         marshalForm = new Form { ShowInTaskbar = false, WindowState = FormWindowState.Minimized, Visible = false };
@@ -4195,6 +4271,7 @@ static class Program {
         // 每 5 秒重试，最多 12 分钟；一旦连上转到正常轮询节奏
         RetryBootstrap();
         StartUpdateTimer();
+        StartWakeInputWatch();
 
         Log("启动 v" + Assembly.GetExecutingAssembly().GetName().Version);
         CleanOldArchives();   // 清理超期日志归档（LogKeepDays=0 永久保留）
@@ -4232,6 +4309,8 @@ static class Program {
         timer.Stop(); animTimer.Stop();
         try { if (smartTimer != null) smartTimer.Stop(); } catch { }
         try { if (updateTimer != null) updateTimer.Stop(); } catch { }
+        try { if (wakeInputTimer != null) wakeInputTimer.Stop(); } catch { }
+        try { if (wakeFastTimer != null) wakeFastTimer.Stop(); } catch { }
         RestoreNormalPoll();   // 退出时把游戏轮询率恢复成常规轮询率，避免鼠标留在 8000Hz
         tray.Visible = false;
         Application.Exit();
@@ -4437,12 +4516,13 @@ static class Program {
 
     static int reading;   // 0=空闲 1=查询中（Interlocked 防重入）
 
-    static NativeHid.BatteryResult SafeRead() {
+    static NativeHid.BatteryResult SafeRead(bool quiet = false) {
         if (Interlocked.Exchange(ref reading, 1) == 1) return null;
         try {
             var res = NativeHid.Read();
-            Log(string.Format("查询 online={0} pct={1} charging={2}", res.Online, res.Online ? res.Percent.ToString() : "-", res.Charging));
+            if (!quiet) Log(string.Format("查询 online={0} pct={1} charging={2}", res.Online, res.Online ? res.Percent.ToString() : "-", res.Charging));
             last = res;
+            if (res.Online && res.Percent >= 0) lastGoodResult = res;
             return res;
         } catch (Exception ex) {
             Log("查询异常: " + ex);
@@ -4451,6 +4531,21 @@ static class Program {
     }
 
     static void ApplyResult(NativeHid.BatteryResult res) {
+        // 唤醒瞬间设备可能还没准备好：先保留上一次有效电量，不闪"未连接/问号"，
+        // 并触发快速重试；等真正读到新数据再恢复正常状态跟踪。
+        bool noData = !res.Online || res.Percent < 0;
+        if (noData && wasOnline && !inNoData) BeginWakeRecovery(false);
+        inNoData = noData;
+        if (noData && DateTime.Now < wakeGraceUntil) {
+            if (lastGoodResult != null) last = lastGoodResult;
+            RenderTray();
+            SetTrayText("毒蝰 V3 Pro\n正在唤醒，读取电量…");
+            return;
+        }
+        if (!noData) {
+            wakeGraceUntil = DateTime.MinValue;
+            NativeHid.FastQuery = false;
+        }
         // 休眠/唤醒开档：无线接收器常驻，鼠标睡下时 online 仍为 True、只是电量读不到，
         // 旧逻辑只认 online False→True 导致整夜鼠标休眠和早上唤醒都不记录
         TrackSleepWake(res);
