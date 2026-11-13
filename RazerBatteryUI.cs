@@ -30,8 +30,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("雷蛇毒蝰 V3 Pro 任务栏电量显示（HID 直连，无需 Synapse/管理员）")]
 [assembly: AssemblyCompany("岚乔")]
 [assembly: AssemblyCopyright("Copyright © 岚乔 2026")]
-[assembly: AssemblyVersion("1.8.1.0")]
-[assembly: AssemblyFileVersion("1.8.1.0")]
+[assembly: AssemblyVersion("1.8.2.0")]
+[assembly: AssemblyFileVersion("1.8.2.0")]
 
 public class ColorRange {
     public int Min = 0;
@@ -92,7 +92,7 @@ static class ColorExt {
 public class Settings {
     public bool AutoStart = false;
     public string IconStyle = "plain";      // plain|ring|mouse|batH|batV|barH|barV|bolt|circle|gauge|hex|drop
-    public int RefreshSeconds = 60;         // 轮询间隔 1-3600 秒
+    public int RefreshSeconds = 5;          // 轮询间隔 1-3600 秒（默认 5 秒；设置页打开时自动 1 秒）
     public bool ShowNumber = true;          // 是否绘制数字
     public bool ShowPercent = false;        // 数字后追加 % 号
     public int FontScale = 100;             // 文字缩放 60-160 (%)
@@ -1870,7 +1870,7 @@ class SettingsForm : Form {
 
         // 侧栏底部版本 / 作者（跟随侧栏高度）
         var lblVersion = new Label {
-            Text = "v1.8.1", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
+            Text = "v1.8.2", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
             Font = Ui.Small, BackColor = Ui.Sidebar
         };
         var lblAuthor = new Label {
@@ -1911,6 +1911,7 @@ class SettingsForm : Form {
             try { previewTimer.Stop(); previewTimer.Dispose(); } catch { }
             try { mouseTimer.Stop(); mouseTimer.Dispose(); } catch { }
             try { speedTimer.Stop(); speedTimer.Dispose(); } catch { }
+            try { Program.SetSettingsLive(false); } catch { }
         };
 
         Program.RefreshMouseInfo(true);
@@ -2337,7 +2338,7 @@ class SettingsForm : Form {
             Program.RefreshTrayIcon();
         };
 
-        var c2 = AddCard(sec, ref y, "实时预览", "左侧为当前状态，右侧循环演示充电效果", 196);
+        var c2 = AddCard(sec, ref y, "实时预览", "左侧为当前状态，右侧循环演示充电效果；设置页打开时每 1 秒刷新", 196);
         Muted(c2, "当前状态（实时）", 24, 62, 200, 24);
         picLive = new PictureBox {
             Bounds = new Rectangle(24, 88, 322, 84), SizeMode = PictureBoxSizeMode.Zoom,
@@ -3004,6 +3005,11 @@ class SettingsForm : Form {
                 LayoutHeader();
             }
         } catch (ObjectDisposedException) { }
+    }
+
+    protected override void OnShown(EventArgs e) {
+        base.OnShown(e);
+        try { Program.SetSettingsLive(true); } catch { }
     }
 
     // 续航统计列表回填（最新在前）+ 平均/最长/最短汇总
@@ -4119,14 +4125,14 @@ static class Program {
     static void BeginWakeRecovery(bool systemResume) {
         if (!systemResume && DateTime.Now < wakeGraceUntil) return;
         wakeGraceUntil = DateTime.Now.AddSeconds(systemResume ? 15 : 8);
-        NativeHid.FastQuery = true;
+        RefreshFastMode();
         try {
             if (wakeFastTimer != null) { wakeFastTimer.Stop(); wakeFastTimer.Dispose(); }
         } catch { }
         var timer = new System.Windows.Forms.Timer { Interval = systemResume ? 15000 : 8000 };
         timer.Tick += (s, e) => {
             timer.Stop();
-            NativeHid.FastQuery = false;
+            RefreshFastMode();
             try { timer.Dispose(); } catch { }
             if (wakeFastTimer == timer) wakeFastTimer = null;
         };
@@ -4455,10 +4461,27 @@ static class Program {
 
     static SettingsForm settingsForm;
 
+    static bool settingsLive;
+    static void ApplyTimerInterval() {
+        if (timer == null) return;
+        timer.Interval = Math.Max(1, settingsLive ? 1 : cfg.RefreshSeconds) * 1000;
+    }
+    static void RefreshFastMode() {
+        NativeHid.FastQuery = settingsLive || DateTime.Now < wakeGraceUntil;
+    }
+    // 设置页打开：后台轮询强制 1 秒 + 快速 HID 握手，预览和顶栏电量立即变快
+    public static void SetSettingsLive(bool live) {
+        settingsLive = live;
+        ApplyTimerInterval();
+        RefreshFastMode();
+        if (live) Update();
+    }
+    public static void RequestRefresh() { Update(); }
+
     static void ShowSettings() {
         if (settingsForm == null || settingsForm.IsDisposed) {
             settingsForm = new SettingsForm(cfg, () => {
-                timer.Interval = Math.Max(1, cfg.RefreshSeconds) * 1000;
+                ApplyTimerInterval();
                 animPhase = 0;
                 RenderTray();
             });
@@ -4544,7 +4567,7 @@ static class Program {
         }
         if (!noData) {
             wakeGraceUntil = DateTime.MinValue;
-            NativeHid.FastQuery = false;
+            RefreshFastMode();
         }
         // 休眠/唤醒开档：无线接收器常驻，鼠标睡下时 online 仍为 True、只是电量读不到，
         // 旧逻辑只认 online False→True 导致整夜鼠标休眠和早上唤醒都不记录
