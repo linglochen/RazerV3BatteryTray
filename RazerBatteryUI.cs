@@ -30,8 +30,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("雷蛇毒蝰 V3 Pro 任务栏电量显示（HID 直连，无需 Synapse/管理员）")]
 [assembly: AssemblyCompany("岚乔")]
 [assembly: AssemblyCopyright("Copyright © 岚乔 2026")]
-[assembly: AssemblyVersion("1.8.4.0")]
-[assembly: AssemblyFileVersion("1.8.4.0")]
+[assembly: AssemblyVersion("1.8.5.0")]
+[assembly: AssemblyFileVersion("1.8.5.0")]
 
 public class ColorRange {
     public int Min = 0;
@@ -1875,7 +1875,7 @@ class SettingsForm : Form {
 
         // 侧栏底部版本 / 作者（跟随侧栏高度）
         var lblVersion = new Label {
-            Text = "v1.8.4", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
+            Text = "v1.8.5", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
             Font = Ui.Small, BackColor = Ui.Sidebar
         };
         var lblAuthor = new Label {
@@ -2456,8 +2456,8 @@ class SettingsForm : Form {
             c1.Controls.Add(dot); dpiDots[i] = dot;
             if (i == 0) dot.Selected = true;
 
-            var numX = Num(c1, 76, ry + 3, 86, 100, 35000, 1000);
-            var numY = Num(c1, 170, ry + 3, 86, 100, 35000, 1000);
+            var numX = Num(c1, 76, ry, 86, 100, 35000, 1000);
+            var numY = Num(c1, 170, ry, 86, 100, 35000, 1000);
             dpiNums[i] = numX; dpiNumsY[i] = numY;
             var link = Tgl(c1, "X=Y", 264, ry + 1, 74, true);
             dpiLinks[i] = link;
