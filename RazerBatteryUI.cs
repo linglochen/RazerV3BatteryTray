@@ -30,8 +30,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("雷蛇毒蝰 V3 Pro 任务栏电量显示（HID 直连，无需 Synapse/管理员）")]
 [assembly: AssemblyCompany("岚乔")]
 [assembly: AssemblyCopyright("Copyright © 岚乔 2026")]
-[assembly: AssemblyVersion("1.8.3.0")]
-[assembly: AssemblyFileVersion("1.8.3.0")]
+[assembly: AssemblyVersion("1.8.4.0")]
+[assembly: AssemblyFileVersion("1.8.4.0")]
 
 public class ColorRange {
     public int Min = 0;
@@ -1775,6 +1775,7 @@ class SettingsForm : Form {
     NumericUpDown[] dpiNums, dpiNumsY;
     ToggleCheck[] dpiLinks;
     DpiSlider[] dpiBars, dpiBarsY;
+    int[] dpiRowTops;
     Label lblDpiStatus, lblPollLive, lblSmartState;
     ModernButton[] pollBtns, gamePollBtns;
     ToggleCheck chkSmartPoll;
@@ -1874,7 +1875,7 @@ class SettingsForm : Form {
 
         // 侧栏底部版本 / 作者（跟随侧栏高度）
         var lblVersion = new Label {
-            Text = "v1.8.3", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
+            Text = "v1.8.4", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
             Font = Ui.Small, BackColor = Ui.Sidebar
         };
         var lblAuthor = new Label {
@@ -2124,12 +2125,19 @@ class SettingsForm : Form {
             dpiDots[i].Selected = (i + 1 == dpiActiveStage);
     }
 
-    // X=Y 勾选：每档 1 条全宽滑杆；取消：X/Y 两条各半宽滑杆
+    // X=Y 勾选：每档 1 条全宽滑杆；取消：X/Y 两条全宽滑杆上下排列
     void LayoutDpiBars(int i, bool linked) {
         if (dpiBars == null || dpiBarsY == null || i < 0 || i >= dpiBars.Length) return;
-        dpiBars[i].Width = linked ? 282 : 136;
-        dpiBarsY[i].Visible = !linked;
-        if (linked) dpiBarsY[i].Value = dpiBars[i].Value;
+        int ry = dpiRowTops != null && i < dpiRowTops.Length ? dpiRowTops[i] : 80 + i * 46;
+        if (linked) {
+            dpiBars[i].Bounds = new Rectangle(348, ry - 1, 282, 30);
+            dpiBarsY[i].Visible = false;
+            dpiBarsY[i].Value = dpiBars[i].Value;
+        } else {
+            dpiBars[i].Bounds = new Rectangle(348, ry - 4, 282, 20);
+            dpiBarsY[i].Bounds = new Rectangle(348, ry + 18, 282, 20);
+            dpiBarsY[i].Visible = true;
+        }
     }
 
     public void ShowToast(string text, bool ok) { Toast(text, ok); }
@@ -2425,19 +2433,21 @@ class SettingsForm : Form {
         var sec = new Panel { Width = ContentW, Height = 10, BackColor = Ui.Bg };
         int y = 0;
 
-        var c1 = AddCard(sec, ref y, "DPI 档位", "5 个档位；勾选 X=Y 时每档 1 条滑杆，取消后 X/Y 各 1 条；点「应用 DPI」写入鼠标", 400);
+        var c1 = AddCard(sec, ref y, "DPI 档位", "5 个档位；勾选 X=Y 时每档 1 条滑杆，取消后 X/Y 上下各 1 条；点「应用 DPI」写入鼠标", 400);
         dpiDots = new StageDot[5];
         dpiNums = new NumericUpDown[5];
         dpiNumsY = new NumericUpDown[5];
         dpiLinks = new ToggleCheck[5];
         dpiBars = new DpiSlider[5];
         dpiBarsY = new DpiSlider[5];
+        dpiRowTops = new int[5];
         for (int i = 0; i < 5; i++) {
             int idx = i;
             int ry = 80 + i * 46;
+            dpiRowTops[i] = ry;
             var dot = new StageDot {
                 Number = i + 1, DotColor = StageColor(i),
-                Bounds = new Rectangle(24, ry, 38, 32)
+                Bounds = new Rectangle(24, ry - 2, 38, 32)
             };
             dot.Picked += (s, e) => {
                 dpiActiveStage = idx + 1;
@@ -2446,10 +2456,10 @@ class SettingsForm : Form {
             c1.Controls.Add(dot); dpiDots[i] = dot;
             if (i == 0) dot.Selected = true;
 
-            var numX = Num(c1, 76, ry - 2, 86, 100, 35000, 1000);
-            var numY = Num(c1, 170, ry - 2, 86, 100, 35000, 1000);
+            var numX = Num(c1, 76, ry + 3, 86, 100, 35000, 1000);
+            var numY = Num(c1, 170, ry + 3, 86, 100, 35000, 1000);
             dpiNums[i] = numX; dpiNumsY[i] = numY;
-            var link = Tgl(c1, "X=Y", 264, ry - 1, 74, true);
+            var link = Tgl(c1, "X=Y", 264, ry + 1, 74, true);
             dpiLinks[i] = link;
             numY.Enabled = false;
 
@@ -2460,7 +2470,7 @@ class SettingsForm : Form {
             };
             c1.Controls.Add(bar); dpiBars[i] = bar;
             var barY = new DpiSlider {
-                Bounds = new Rectangle(494, ry - 1, 136, 30),
+                Bounds = new Rectangle(348, ry + 18, 282, 20),
                 Minimum = 100, Maximum = 35000,
                 SliderColor = StageColor(i), Visible = false
             };
