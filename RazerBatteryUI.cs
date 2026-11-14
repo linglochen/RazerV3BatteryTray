@@ -30,8 +30,8 @@ using Microsoft.Win32;
 [assembly: AssemblyDescription("雷蛇毒蝰 V3 Pro 任务栏电量显示（HID 直连，无需 Synapse/管理员）")]
 [assembly: AssemblyCompany("岚乔")]
 [assembly: AssemblyCopyright("Copyright © 岚乔 2026")]
-[assembly: AssemblyVersion("1.8.2.0")]
-[assembly: AssemblyFileVersion("1.8.2.0")]
+[assembly: AssemblyVersion("1.8.3.0")]
+[assembly: AssemblyFileVersion("1.8.3.0")]
 
 public class ColorRange {
     public int Min = 0;
@@ -106,11 +106,7 @@ public class Settings {
     public int AdvRotateDeg = 0;            // -44..44
     public float[] CustomCurve = { 1.00f, 1.15f, 1.30f, 1.42f, 1.50f };  // 自定义曲线 5 个点
     public List<string> Samples = new List<string>();   // 电量采样 "ISO时间|电量|充电"（用于估算可用时长）
-    public List<ColorRange> Ranges = new List<ColorRange> {
-        new ColorRange { Min = 20, Max = 100, ColorHex = "#00E676" },
-        new ColorRange { Min = 10, Max = 20,  ColorHex = "#FF9800" },
-        new ColorRange { Min = 0,  Max = 10,  ColorHex = "#F44336" },
-    };
+    public List<ColorRange> Ranges = new List<ColorRange>();   // 不在字段初始值里放默认项：XmlSerializer 会向已初始化的 List 继续 Add，导致重启多出默认区间
     public List<string> History = new List<string>();   // 事件记录（新事件 append）
     public string LastFullTime = "";                    // 最近一次充满电时间
     public string LastEmptyTime = "";                   // 最近一次没电时间
@@ -134,6 +130,14 @@ public class Settings {
     public bool AutoCheckUpdate = true;                    // 启动后自动检查 GitHub 新版本
     public string LastUpdateCheck = "";                    // 最近一次检查时间（ISO）
     public string SkippedUpdate = "";                      // 用户点了「稍后」的版本，自动检查不再重复提示
+
+    public static List<ColorRange> CreateDefaultRanges() {
+        return new List<ColorRange> {
+            new ColorRange { Min = 20, Max = 100, ColorHex = "#00E676" },
+            new ColorRange { Min = 10, Max = 20,  ColorHex = "#FF9800" },
+            new ColorRange { Min = 0,  Max = 10,  ColorHex = "#F44336" },
+        };
+    }
 
     public RenderOpts ToOpts(int phase) {
         return new RenderOpts {
@@ -1770,7 +1774,7 @@ class SettingsForm : Form {
     StageDot[] dpiDots;
     NumericUpDown[] dpiNums, dpiNumsY;
     ToggleCheck[] dpiLinks;
-    DpiSlider[] dpiBars;
+    DpiSlider[] dpiBars, dpiBarsY;
     Label lblDpiStatus, lblPollLive, lblSmartState;
     ModernButton[] pollBtns, gamePollBtns;
     ToggleCheck chkSmartPoll;
@@ -1870,7 +1874,7 @@ class SettingsForm : Form {
 
         // 侧栏底部版本 / 作者（跟随侧栏高度）
         var lblVersion = new Label {
-            Text = "v1.8.2", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
+            Text = "v1.8.3", AutoSize = true, ForeColor = Color.FromArgb(124, 131, 143),
             Font = Ui.Small, BackColor = Ui.Sidebar
         };
         var lblAuthor = new Label {
@@ -2118,6 +2122,14 @@ class SettingsForm : Form {
         if (dpiDots == null) return;
         for (int i = 0; i < dpiDots.Length; i++)
             dpiDots[i].Selected = (i + 1 == dpiActiveStage);
+    }
+
+    // X=Y 勾选：每档 1 条全宽滑杆；取消：X/Y 两条各半宽滑杆
+    void LayoutDpiBars(int i, bool linked) {
+        if (dpiBars == null || dpiBarsY == null || i < 0 || i >= dpiBars.Length) return;
+        dpiBars[i].Width = linked ? 282 : 136;
+        dpiBarsY[i].Visible = !linked;
+        if (linked) dpiBarsY[i].Value = dpiBars[i].Value;
     }
 
     public void ShowToast(string text, bool ok) { Toast(text, ok); }
@@ -2413,12 +2425,13 @@ class SettingsForm : Form {
         var sec = new Panel { Width = ContentW, Height = 10, BackColor = Ui.Bg };
         int y = 0;
 
-        var c1 = AddCard(sec, ref y, "DPI 档位", "5 个档位，圆圈为当前档位；X/Y 可分开设置；点「应用 DPI」写入鼠标", 400);
+        var c1 = AddCard(sec, ref y, "DPI 档位", "5 个档位；勾选 X=Y 时每档 1 条滑杆，取消后 X/Y 各 1 条；点「应用 DPI」写入鼠标", 400);
         dpiDots = new StageDot[5];
         dpiNums = new NumericUpDown[5];
         dpiNumsY = new NumericUpDown[5];
         dpiLinks = new ToggleCheck[5];
         dpiBars = new DpiSlider[5];
+        dpiBarsY = new DpiSlider[5];
         for (int i = 0; i < 5; i++) {
             int idx = i;
             int ry = 80 + i * 46;
@@ -2446,25 +2459,48 @@ class SettingsForm : Form {
                 SliderColor = StageColor(i)
             };
             c1.Controls.Add(bar); dpiBars[i] = bar;
+            var barY = new DpiSlider {
+                Bounds = new Rectangle(494, ry - 1, 136, 30),
+                Minimum = 100, Maximum = 35000,
+                SliderColor = StageColor(i), Visible = false
+            };
+            c1.Controls.Add(barY); dpiBarsY[i] = barY;
             numX.ValueChanged += (s, e) => {
                 if (syncingDpiUi) return;
                 int v = (int)numX.Value;
                 if (bar.Value != v) bar.Value = v;
-                if (link.Checked && numY.Value != v) numY.Value = v;
+                if (link.Checked) {
+                    if (numY.Value != v) numY.Value = v;
+                    if (barY.Value != v) barY.Value = v;
+                }
             };
             numY.ValueChanged += (s, e) => {
                 if (syncingDpiUi) return;
+                int v = (int)numY.Value;
+                if (barY.Value != v) barY.Value = v;
                 if (link.Checked && numX.Value != numY.Value) numX.Value = numY.Value;
             };
             link.CheckedChanged += (s, e) => {
                 if (syncingDpiUi) return;
-                if (link.Checked) { numY.Value = numX.Value; numY.Enabled = false; }
-                else numY.Enabled = true;
+                if (link.Checked) {
+                    numY.Value = numX.Value;
+                    barY.Value = bar.Value;
+                    numY.Enabled = false;
+                } else numY.Enabled = true;
+                LayoutDpiBars(idx, link.Checked);
             };
             bar.ValueChanged += (s, e) => {
                 if (syncingDpiUi) return;
                 if (numX.Value != bar.Value) numX.Value = bar.Value;
-                if (link.Checked && numY.Value != bar.Value) numY.Value = bar.Value;
+                if (link.Checked) {
+                    if (numY.Value != bar.Value) numY.Value = bar.Value;
+                    if (barY.Value != bar.Value) barY.Value = bar.Value;
+                }
+            };
+            barY.ValueChanged += (s, e) => {
+                if (syncingDpiUi) return;
+                if (numY.Value != barY.Value) numY.Value = barY.Value;
+                if (link.Checked && numX.Value != barY.Value) numX.Value = barY.Value;
             };
         }
         var btnReadDpi = Btn(c1, "从鼠标读取", 24, 324, 124, 36, ModernButton.Kind.Secondary, Color.White);
@@ -2683,15 +2719,18 @@ class SettingsForm : Form {
                 dpiNumsY[i].Visible = has;
                 dpiLinks[i].Visible = has;
                 dpiBars[i].Visible = has;
+                dpiBarsY[i].Visible = has;
                 if (!has) continue;
                 int x = Math.Max(100, Math.Min(35000, st.StageX[i]));
                 int y = Math.Max(100, Math.Min(35000, st.StageY[i]));
                 dpiNums[i].Value = x;
                 dpiNumsY[i].Value = y;
                 dpiBars[i].Value = x;
+                dpiBarsY[i].Value = y;
                 bool linked = x == y;
                 dpiLinks[i].Checked = linked;
                 dpiNumsY[i].Enabled = !linked;
+                LayoutDpiBars(i, linked);
             }
             dpiActiveStage = Math.Max(1, Math.Min(st.StageCount, st.ActiveStage));
             UpdateStageDots();
@@ -4625,6 +4664,14 @@ static class Program {
                 if (res.Percent >= 0 && res.Percent < 100 && wasFull && !fullNow) AddHistory(string.Format("开始耗电（{0}%）", res.Percent));
                 if (res.Charging && !wasCharging) {
                     AddHistory(string.Format("开始充电（{0}%）", res.Percent));
+                    // 低电量直接插线/放上充电座时，设备不一定会先掉线；
+                    // 这种情况下把「开始充电」也记为最近没电，避免最近没电永远空着
+                    int lowPct = lastPercent >= 0 ? lastPercent : res.Percent;
+                    if (lowPct >= 0 && lowPct <= EmptyRecordThreshold) {
+                        cfg.LastEmptyTime = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss");
+                        if (cfg.CurrentFullStart != "") CloseRunStat(cfg.LastEmptyTime, lowPct);
+                        AddHistory(string.Format("没电（{0}%，开始充电）", lowPct));
+                    }
                     chargeStart = DateTime.Now;      // 充电耗时开档
                     chargeStartPct = res.Percent;
                 }
@@ -4851,6 +4898,7 @@ static class Program {
     static int lastGoodPct = -1;     // 最近一次有效电量（入睡起点电量用）
     const int SleepGapSeconds = 120;      // 轮询空档 ≥2 分钟 = 系统睡眠/休眠
     const int UnknownSleepSeconds = 90;   // 电量持续读不到 ≥90 秒 = 鼠标休眠
+    const int EmptyRecordThreshold = 10;  // 开始充电时 ≤10% 也记为「最近没电」
 
     // 每轮查询先判睡眠/唤醒：这里只负责"开档"，闭环仍走 ApplyResult 里的 RecordSleepWake
     // （必须等读到有效电量才算醒来，否则会记成"醒来 -1%"）
@@ -5120,13 +5168,24 @@ static class Program {
                 using (var fs = File.OpenRead(SettingsPath)) {
                     var s = (Settings)ser.Deserialize(fs);
                     if (s != null) {
-                        // 老版本 bug：dgv 每次保存都写入重复行（实测堆到 36 条阈值），
-                        // 按 Min+Max+颜色 去重，防止 xml 无限膨胀
-                        var seen = new HashSet<string>();
+                        if (s.Ranges == null) s.Ranges = new List<ColorRange>();
+                        // 老版本 bug 1：dgv 每次保存都写入重复行（实测堆到 36 条阈值），按 Min+Max+颜色去重
+                        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                         var clean = new List<ColorRange>();
                         foreach (var r in s.Ranges)
                             if (seen.Add(r.Min + "-" + r.Max + "-" + r.ColorHex))
                                 clean.Add(r);
+                        // 老版本 bug 2：Ranges 字段初始化了 3 条默认值，XmlSerializer 反序列化时
+                        // 会继续 Add 到已有 List 后面，导致每次重启多出默认区间。这里一次性清掉
+                        // 旧默认三元组（仅当用户已有自定义区间时），并保证空列表回落到默认值。
+                        if (clean.Count > 3) {
+                            var legacy = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+                                "20-100-#00E676", "10-20-#FF9800", "0-10-#F44336"
+                            };
+                            var filtered = clean.Where(r => !legacy.Contains(r.Min + "-" + r.Max + "-" + r.ColorHex)).ToList();
+                            if (filtered.Count > 0) clean = filtered;
+                        }
+                        if (clean.Count == 0) clean = Settings.CreateDefaultRanges();
                         s.Ranges = clean;
                         // v1.7.3：旧的宽幅电池样式并入"电池-横向"（双格方案已移除）
                         if (s.IconStyle == "batPct" || s.IconStyle == "batWin") s.IconStyle = "batH";
@@ -5135,7 +5194,9 @@ static class Program {
                 }
             }
         } catch (Exception ex) { Log("读取设置失败: " + ex.Message); }
-        return new Settings();
+        var d = new Settings();
+        d.Ranges = Settings.CreateDefaultRanges();
+        return d;
     }
 
     public static void SaveSettings() {

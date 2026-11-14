@@ -1,12 +1,13 @@
 ﻿# RazerV3BatteryTray — 雷蛇毒蝰 V3 Pro 任务栏电量显示
 
-**版本 1.8.2 · 作者：岚乔**
+**版本 1.8.3 · 作者：岚乔**
 
 ![任务栏电量效果](docs/tray-battery.png)
 
 > 版本规则：功能新增/大改动 → 次版本号（1.x）；bug 修复 → 修订号（1.2.x）。每次改动同步更新源码 `[assembly: AssemblyVersion]`、设置页左下角版本标签与启动日志。
 
 ## 更新记录
+- 1.8.3（2026-11-14）：修复三处设置问题——①「最近没电」不再只在设备低电掉线时记录，开始充电时电量 ≤10% 也会记为最近没电并闭合续航区间；②DPI 的 X/Y 取消联动时每档显示 X、Y 两条滑杆，勾选 X=Y 时合并回一条；③电量配色不会再在重启后多出默认区间（不再向已初始化的 List 追加，并自动清理旧版本遗留的 3 条默认色段）
 - 1.8.2（2026-11-14）：把电量刷新默认值从 60 秒改为 **5 秒**；设置页打开期间强制 **1 秒轮询** 并启用快速 HID 握手（设置页关闭后恢复后台设定间隔），实时预览和顶部「当前电量」不再等一分钟；刷新间隔仍可在 1–3600 秒之间调整
 - 1.8.1（2026-11-13）：优化鼠标/系统休眠唤醒后的电量读取——系统 Resume 立即进入快速查询；检测到用户移动鼠标时提前触发查询；唤醒后 8/15 秒内使用 15/30/60/120ms 的快速握手重试（平时仍用 80/150/250ms 稳定节奏）；唤醒瞬间保留上一次有效电量，避免任务栏先闪「未连接 / 问号」；系统唤醒、鼠标休眠唤醒都覆盖
 - 1.8.0（2026-11-13）：新增自动更新——启动 10 秒后自动检查 GitHub Release，之后每 6 小时检查一次（可在「提醒」页关闭）；发现新版本弹窗展示更新内容，确认后自动下载、SHA256 校验、调用 MSI 静默升级并自动重启；新增侧栏左下角「检查更新」按钮和托盘右键「检查更新」；升级保留 `config\`、`log\`、自启动与任务栏电量设置；新增 MIT `LICENSE`；README 增加任务栏电量效果图、图标样式图和 MIT 许可证说明
@@ -57,7 +58,7 @@
 
 ## 下载
 
-- 安装包：到 [Releases](../../releases/latest) 下载最新的 `RazerV3BatteryTray_Setup_1.8.2.msi`
+- 安装包：到 [Releases](../../releases/latest) 下载最新的 `RazerV3BatteryTray_Setup_1.8.3.msi`
 - 绿色使用：自行编译 `RazerV3BatteryTray.exe` 后双击运行（编译方法见文末）
 
 ## 快速使用
@@ -69,13 +70,13 @@
 
 ## 安装包（MSI）
 
-- 安装包：`dist\RazerV3BatteryTray_Setup_1.8.2.msi`（已发布到 GitHub Releases；源码仓库不包含 `dist\` 构建产物）
+- 安装包：`dist\RazerV3BatteryTray_Setup_1.8.3.msi`（已发布到 GitHub Releases；源码仓库不包含 `dist\` 构建产物）
 - 当前用户安装，无需管理员；默认安装到 `%LocalAppData%\RazerV3BatteryTray`
 - 安装向导「目标文件夹」页可直接修改路径，或点「更改」选择其他可写目录
 - 安装后创建开始菜单「毒蝰 V3 Pro 电量」和「设置中心」快捷方式
 - 卸载：Windows 设置 → 应用 → 已安装的应用 → 雷蛇毒蝰 V3 Pro 电量托盘 → 卸载
 - 卸载会自动关闭正在运行的程序，并删除：程序文件、`config\`、`log\`（含归档）、开始菜单快捷方式、`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\RazerV3BatteryTray` 自启动项、安装目录（目录为空时）以及 MSI 注册信息
-- 安装向导和 Windows「应用」列表使用主程序鼠标图标；MSI 右键属性中的标题（RazerV3BatteryTray）、主题（产品名）、作者（岚乔）、备注（功能描述）与 exe 一致；版本号 1.8.2（MSI 版本字段最多三段，exe 为 1.8.2.0）
+- 安装向导和 Windows「应用」列表使用主程序鼠标图标；MSI 右键属性中的标题（RazerV3BatteryTray）、主题（产品名）、作者（岚乔）、备注（功能描述）与 exe 一致；版本号 1.8.3（MSI 版本字段最多三段，exe 为 1.8.3.0）
 
 ## 功能
 
@@ -87,7 +88,7 @@
 
 - 发现新版本弹窗展示版本号与更新内容；确认后显示下载进度，下载完成自动校验 SHA256，再调用 MSI 静默升级并重启
 - 升级由 MSI 原地覆盖，保留 `config\`、`log\`、开机自启和任务栏全部外观设置；直连 GitHub 下载失败时会尝试加速镜像（仅在有官方 SHA256 校验值时）
-- 发版要求：Release 标签使用 `v主版本.次版本.修订号`（如 `v1.8.2`），并上传 `RazerV3BatteryTray_Setup_x.y.z.msi`；不要勾选 prerelease，自动更新只读取 GitHub 的 latest 正式版
+- 发版要求：Release 标签使用 `v主版本.次版本.修订号`（如 `v1.8.3`），并上传 `RazerV3BatteryTray_Setup_x.y.z.msi`；不要勾选 prerelease，自动更新只读取 GitHub 的 latest 正式版
 - GitHub API 未登录限流为每小时 60 次；正常每 6 小时检查一次远低于限制
 
 ### 电量显示
@@ -216,7 +217,7 @@ razer_battery\
 | `docs\tray-battery.png` | 任务栏浅色/深色/充电效果图 |
 | `docs\settings-mouse.png` | 设置界面效果图 |
 | `docs\settings-update.png` | 自动检查更新设置效果图 |
-| `dist\RazerV3BatteryTray_Setup_1.8.2.msi` | 可分发 MSI 安装包 |
+| `dist\RazerV3BatteryTray_Setup_1.8.3.msi` | 可分发 MSI 安装包 |
 | `config\settings.xml` | 用户设置（自动生成） |
 | `log\razer_battery_tray.log` | 运行日志（自动生成） |
 | `config\start_silent.vbs` | 静默自启脚本（勾选静默启动时自动生成） |
@@ -240,12 +241,12 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /nologo /target:winexe ^
 
 ```
 candle.exe setup_v3.wxs -ext WixUIExtension
-light.exe setup_v3.wixobj -ext WixUIExtension -loc WixUI_zh-CN.wxl -o dist\RazerV3BatteryTray_Setup_1.8.2.msi
+light.exe setup_v3.wixobj -ext WixUIExtension -loc WixUI_zh-CN.wxl -o dist\RazerV3BatteryTray_Setup_1.8.3.msi
 ```
 
 安装包使用 `mouse.ico` 作为程序/应用列表图标，`installer_banner.bmp` 与 `installer_dialog.bmp` 作为安装向导视觉，`license.rtf` 作为许可页。
 
-版本/作者信息在源码顶部 `[assembly: ...]` 特性中（v1.8.2.0，岚乔）。
+版本/作者信息在源码顶部 `[assembly: ...]` 特性中（v1.8.3.0，岚乔）。
 
 ## 许可证
 
